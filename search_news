@@ -1,0 +1,136 @@
+import psycopg2
+import pandas as pd
+from io import StringIO
+
+import requests
+import dateparser
+import pandas as pd
+from sqlalchemy import create_engine
+
+API_KEY = "bf5c92db4ce2ac90addf545eed810f1a93d5241c3b6ca5bca9a0603f2625d5af"
+
+def get_news_serpapi(query):
+    url = "https://serpapi.com/search.json"
+    params = {
+        "q": query,
+        "tbm": "nws",
+        "hl": "id",
+        "gl": "id",
+        "api_key": API_KEY
+    }
+
+    res = requests.get(url, params=params)
+    data = res.json()
+
+    if "news_results" not in data:
+        print(f"Tidak ada hasil ditemukan untuk: {query}")
+        return pd.DataFrame()
+
+    articles = data["news_results"]
+    df = pd.DataFrame([{
+        "title": a["title"],
+        "source": a.get("source"),
+        "date": a.get("date"),
+        "link": a.get("link"),
+        "snippet": a.get("snippet"),
+        "query": query  # tambahkan kolom asal query
+    } for a in articles])
+
+    return df
+
+# Daftar kata kunci
+keywords = ["Bank Muamalat Indonesia", "Muamalat Digital", "Bank Muamalat"]
+
+# Gabungkan hasil dari semua kata kunci
+all_results = []
+
+for kw in keywords:
+    print(f"Mencari berita untuk: {kw}")
+    df = get_news_serpapi(kw)
+    if not df.empty:
+        all_results.append(df)
+
+# Gabungkan semua hasil jadi satu DataFrame
+df_all = pd.concat(all_results, ignore_index=True)
+# Asumsikan df_all adalah DataFrame hasil scraping berita
+def parse_date(date_string):
+    # Gunakan settings untuk timezone Jakarta dan prefer past
+    return dateparser.parse(date_string, settings={'PREFER_DATES_FROM': 'past', 'TIMEZONE': 'Asia/Jakarta'})
+
+# Terapkan ke kolom 'date'
+df_all['parsed_date'] = df_all['date'].apply(parse_date)
+
+# Ubah ke timezone-aware datetime (optional)
+df_all['parsed_date'] = pd.to_datetime(df_all['parsed_date'])
+
+# # Simpan hasil ke CSV jika perlu
+# df_all.to_csv("berita_bank_muamalat.csv", index=False, encoding="utf-8-sig")
+
+# Simpan ke CSV
+df_all.to_csv("berita_bank_muamalat.csv", index=False, encoding="utf-8-sig")
+
+
+# Koneksi ke PostgreSQL lokal
+pg_conn = psycopg2.connect(
+    dbname="Data_Quality",
+    user="postgres",
+    password="Mu@malat1899",
+    host="localhost",
+    port="5432"
+)
+pg_cursor = pg_conn.cursor()
+
+# Nama tabel target di PostgreSQL
+table_pq = "muamalat_news"
+
+# Path file CSV dari laptop
+csv_path = 'berita_bank_muamalat.csv'
+try:
+    # Baca file CSV
+    df = pd.read_csv(csv_path)
+
+    # Ubah nama kolom ke huruf kecil
+    df.columns = [col.strip().lower() for col in df.columns]
+
+    # Bersihkan karakter NULL dan newline dari string
+    df = df.applymap(lambda x: x.replace('\x00', '') if isinstance(x, str) else x)
+    df = df.applymap(lambda x: x.replace('\n', ' ').replace('\r', ' ') if isinstance(x, str) else x)
+
+    # Konversi kolom datetime jika ada
+    if "parsed_date" in df.columns:
+        df["parsed_date"] = pd.to_datetime(df["parsed_date"], errors='coerce')
+
+    # Hapus tabel jika sudah ada
+    print(f"Menghapus tabel {table_pq} jika ada...")
+    pg_cursor.execute(f'DROP TABLE IF EXISTS "{table_pq}";')
+
+    # Buat ulang tabel PostgreSQL berdasarkan tipe data
+    create_columns = []
+    for col in df.columns:
+        if df[col].dtype == 'datetime64[ns]':
+            create_columns.append(f'"{col}" TIMESTAMP')
+        else:
+            create_columns.append(f'"{col}" TEXT')
+
+    create_table_sql = f'CREATE TABLE "{table_pq}" ({", ".join(create_columns)});'
+    pg_cursor.execute(create_table_sql)
+    pg_conn.commit()
+    print(f"Tabel {table_pq} berhasil dibuat.")
+
+    # Export DataFrame ke buffer dan copy ke PostgreSQL
+    buffer = StringIO()
+    df.to_csv(buffer, index=False, header=False, sep="|", encoding="utf-8", na_rep="", quotechar='"')
+    buffer.seek(0)
+
+    pg_cursor.copy_from(buffer, table_pq, sep="|", null="", columns=df.columns.tolist())
+    pg_conn.commit()
+    print(f"Data berhasil dimasukkan ke tabel {table_pq}.")
+
+except Exception as e:
+    print(f"Terjadi error: {e}")
+
+finally:
+    pg_cursor.close()
+    pg_conn.close()
+
+print("Proses ELT selesai.")
