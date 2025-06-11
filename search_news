@@ -7,7 +7,7 @@ import dateparser
 import pandas as pd
 from sqlalchemy import create_engine
 
-API_KEY = "bf5c92db4ce2ac90addf545eed810f1a93d5241c3b6ca5bca9a0603f2625d5af"
+API_KEY = "000000000000000000000000000000000000000000000"
 
 def get_news_serpapi(query):
     url = "https://serpapi.com/search.json"
@@ -74,7 +74,7 @@ df_all.to_csv("berita_bank_muamalat.csv", index=False, encoding="utf-8-sig")
 pg_conn = psycopg2.connect(
     dbname="Data_Quality",
     user="postgres",
-    password="Mu@malat1899",
+    password="000000000",
     host="localhost",
     port="5432"
 )
